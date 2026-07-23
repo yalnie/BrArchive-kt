@@ -1,0 +1,32 @@
+<resources>
+    <string name="app_name">brarchive tools</string>
+    <string name="theme_title">Theme</string>
+    <string name="theme_light">Light</string>
+    <string name="theme_system">System</string>
+    <string name="theme_dark">Dark</string>
+    <string name="permission_required">Storage access permission is required to pack/unpack files.</string>
+    <string name="grant_permission">Grant Permission</string>
+    <string name="input_path_label">Input Path (File or Directory)</string>
+    <string name="output_path_label">Output Path (Optional)</string>
+    <string name="recursive">Recursive Directory</string>
+    <string name="dedup">Deduplicate Content (Pack only)</string>
+    <string name="delete_source">Delete source files when finished</string>
+    <string name="dynamic_color">Dynamic Colors</string>
+    <string name="encode_button">Pack (Encode)</string>
+    <string name="decode_button">Unpack (Decode)</string>
+    <string name="cancel_button">Cancel Operation</string>
+    <string name="run_log_header">Execution Logs:</string>
+    <string name="welcome_log">Welcome to brarchive-kt Android Edition!</string>
+    <string name="err_empty_input">Error: Input path is empty</string>
+    <string name="start_encoding">Starting encoding...</string>
+    <string name="start_decoding">Starting decoding...</string>
+    <string name="encode_complete">>> Packing complete, time elapsed: %1$dms</string>
+    <string name="decode_complete">>> Unpacking complete, time elapsed: %1$dms</string>
+    <string name="err_not_found_brarchive">Directory __brarchive not found</string>
+    <string name="err_input_not_exists">Input path does not exist</string>
+    <string name="err_file_not_found">File does not exist</string>
+    <string name="menu">Menu</string>
+    <string name="operation_cancelled">Operation cancelled by user.</string>
+    <string name="github_title" translatable="false">GitHub</string>
+    <string name="license_title">License</string>
+</resources>
