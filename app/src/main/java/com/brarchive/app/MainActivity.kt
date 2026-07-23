@@ -220,11 +220,12 @@ fun AppScreen(activity: MainActivity) {
 
 fun encodeSingle(path: File, out: File, dedup: Boolean, deleteSource: Boolean, log: (String) -> Unit) {
     if (!path.exists()) error("输入路径不存在")
-    val entries = mutableMapOf<String, String>()
+    val entries = mutableMapOf<String, ByteArray>()
     if (path.isDirectory) {
-        path.listFiles()?.forEach { if (it.isFile) entries[it.name] = it.readText(Charsets.UTF_8) }
+        // 直接读取字节(Bytes)而不是文本(Text)
+        path.listFiles()?.forEach { if (it.isFile) entries[it.name] = it.readBytes() }
     } else {
-        entries[path.name] = path.readText(Charsets.UTF_8)
+        entries[path.name] = path.readBytes()
     }
     out.writeBytes(BrArchive.serialize(entries, dedup))
     log(">> 生成: ${out.name}")
@@ -233,10 +234,14 @@ fun encodeSingle(path: File, out: File, dedup: Boolean, deleteSource: Boolean, l
 
 fun encodeRecursive(sourceRoot: File, current: File, archiveRoot: File, dedup: Boolean, deleteSource: Boolean, log: (String) -> Unit) {
     val subDirs = mutableListOf<File>()
-    val files = mutableMapOf<String, String>()
+    val files = mutableMapOf<String, ByteArray>()
     current.listFiles()?.forEach { f ->
-        if (f.isDirectory) { if (f.name != "__brarchive") subDirs.add(f) }
-        else if (f.isFile) try { files[f.name] = f.readText(Charsets.UTF_8) } catch (e: Exception) { log("跳过非UTF-8: ${f.name}") }
+        if (f.isDirectory) { 
+            if (f.name != "__brarchive") subDirs.add(f) 
+        } else if (f.isFile) {
+            // 直接读取字节，不挑格式（图片、文本通吃）
+            files[f.name] = f.readBytes()
+        }
     }
     if (files.isNotEmpty()) {
         val rel = current.relativeTo(sourceRoot).path
@@ -256,7 +261,8 @@ fun decodeSingle(path: File, out: File, deleteSource: Boolean, log: (String) -> 
     for ((name, content) in archive) {
         val dest = File(out, name)
         dest.parentFile?.mkdirs()
-        dest.writeText(content, Charsets.UTF_8)
+        // 直接原封不动写入字节，防止损坏图片
+        dest.writeBytes(content)
     }
     log("<< 解包: ${path.name} -> ${archive.size} 个文件")
     if (deleteSource) path.delete()

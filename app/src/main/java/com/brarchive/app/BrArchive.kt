@@ -12,7 +12,7 @@ object BrArchive {
 
     data class EntryDescriptor(val name: String, val contentsOffset: Int, val contentsLen: Int)
 
-    fun serialize(entries: Map<String, String>, dedup: Boolean = false): ByteArray {
+    fun serialize(entries: Map<String, ByteArray>, dedup: Boolean = false): ByteArray {
         val entryCount = entries.size
         val contentBase = HEADER_SIZE + (entryCount * DESCRIPTOR_SIZE)
 
@@ -21,11 +21,10 @@ object BrArchive {
         val contentIndex = mutableMapOf<ByteBuffer, Int>()
         val descriptorBuffer = ByteBuffer.allocate(entryCount * DESCRIPTOR_SIZE).order(ByteOrder.LITTLE_ENDIAN)
 
-        for ((name, content) in entries) {
+        for ((name, cBytes) in entries) {
             val nameBytes = name.toByteArray(Charsets.UTF_8)
             if (nameBytes.size > ENTRY_NAME_LEN_MAX) throw EntryNameTooLongException(nameBytes.size)
 
-            val cBytes = content.toByteArray(Charsets.UTF_8)
             val cLen = cBytes.size
             var cOffset = currentOffset
 
@@ -66,7 +65,7 @@ object BrArchive {
         return finalBuf.array()
     }
 
-    fun deserialize(data: ByteArray): Map<String, String> {
+    fun deserialize(data: ByteArray): Map<String, ByteArray> {
         val buf = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
         
         if (buf.remaining() < HEADER_SIZE) throw BrArchiveIoException("File too small")
@@ -92,13 +91,13 @@ object BrArchive {
         }
 
         val contentBase = buf.position()
-        val result = mutableMapOf<String, String>()
+        val result = mutableMapOf<String, ByteArray>()
 
         for (desc in descriptors) {
             val cBytes = ByteArray(desc.contentsLen)
             buf.position(contentBase + desc.contentsOffset)
             buf.get(cBytes)
-            result[desc.name] = String(cBytes, Charsets.UTF_8)
+            result[desc.name] = cBytes
         }
         return result
     }
