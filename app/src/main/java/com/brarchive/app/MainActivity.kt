@@ -1,23 +1,30 @@
 package com.brarchive.app
 
+import android.Manifest
+import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.provider.Settings
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -35,19 +42,29 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    fun requestStoragePermission() {
+    fun requestStoragePermissionAndroid11Plus() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             try {
                 val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
-                intent.addCategory("android.intent.category.DEFAULT")
-                intent.data = Uri.parse(String.format("package:%s", applicationContext.packageName))
+                intent.data = Uri.parse("package:$packageName")
                 startActivity(intent)
             } catch (e: Exception) {
-                val intent = Intent()
-                intent.action = Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION
+                val intent = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
                 startActivity(intent)
             }
         }
+    }
+}
+
+// 检查是否拥有存储权限（兼容各个安卓版本）
+fun checkStoragePermission(context: Context): Boolean {
+    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        Environment.isExternalStorageManager() // Android 11+ 检查
+    } else {
+        // Android 10 及以下检查
+        val read = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_EXTERNAL_STORAGE)
+        val write = ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE)
+        read == PackageManager.PERMISSION_GRANTED && write == PackageManager.PERMISSION_GRANTED
     }
 }
 
@@ -59,24 +76,48 @@ fun AppScreen(activity: MainActivity) {
     var recursive by remember { mutableStateOf(false) }
     var dedup by remember { mutableStateOf(true) }
     var deleteSource by remember { mutableStateOf(false) }
-    val logs = remember { mutableStateListOf<String>("欢迎使用 brarchive-kt 安卓版！") }
+    val logs = remember { mutableStateListOf("欢迎使用 brarchive-kt 安卓版！") }
 
     fun log(msg: String) { logs.add(msg) }
 
-    // 检查是否有所有文件访问权限（Android 11+）
-    val hasPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-        Environment.isExternalStorageManager()
-    } else {
-        true // 旧版本在此省略动态请求代码，一般可以直接读写
+    // 动态权限状态与生命周期监听（用户去设置页返回后自动刷新 UI）
+    var hasPermission by remember { mutableStateOf(checkStoragePermission(activity)) }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                hasPermission = checkStoragePermission(activity)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    // 安卓 10 及以下的传统弹窗权限请求
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) {
+        hasPermission = checkStoragePermission(activity)
     }
 
     Column(modifier = Modifier.padding(16.dp).fillMaxSize()) {
         if (!hasPermission) {
             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Text("需要「所有文件访问权限」才能在手机存储中打包/解包文件。")
+                    Text("需要「存储访问权限」才能在手机中打包/解包文件。")
                     Spacer(Modifier.height(8.dp))
-                    Button(onClick = { activity.requestStoragePermission() }) {
+                    Button(onClick = {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                            activity.requestStoragePermissionAndroid11Plus()
+                        } else {
+                            permissionLauncher.launch(
+                                arrayOf(
+                                    Manifest.permission.READ_EXTERNAL_STORAGE,
+                                    Manifest.permission.WRITE_EXTERNAL_STORAGE
+                                )
+                            )
+                        }
+                    }) {
                         Text("点击授予权限")
                     }
                 }
@@ -111,50 +152,56 @@ fun AppScreen(activity: MainActivity) {
         }
 
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-            Button(onClick = {
-                if (inputPath.isBlank()) { log("错误: 输入路径为空"); return@Button }
-                coroutineScope.launch {
-                    log("开始打包...")
-                    withContext(Dispatchers.IO) {
-                        try {
-                            val start = System.currentTimeMillis()
-                            val path = File(inputPath)
-                            val out = if (outputPath.isNotBlank()) File(outputPath) else null
-                            if (recursive) {
-                                val root = File(out ?: path, "__brarchive")
-                                encodeRecursive(path, path, root, dedup, deleteSource) { log(it) }
-                            } else {
-                                val outF = out ?: File(path.nameWithoutExtension + ".brarchive")
-                                encodeSingle(path, outF, dedup, deleteSource) { log(it) }
-                            }
-                            log(">> 打包完成，耗时: ${System.currentTimeMillis() - start}ms")
-                        } catch (e: Exception) { log("错误: ${e.message}") }
+            Button(
+                enabled = hasPermission,
+                onClick = {
+                    if (inputPath.isBlank()) { log("错误: 输入路径为空"); return@Button }
+                    coroutineScope.launch {
+                        log("开始打包...")
+                        withContext(Dispatchers.IO) {
+                            try {
+                                val start = System.currentTimeMillis()
+                                val path = File(inputPath)
+                                val out = if (outputPath.isNotBlank()) File(outputPath) else null
+                                if (recursive) {
+                                    val root = File(out ?: path, "__brarchive")
+                                    encodeRecursive(path, path, root, dedup, deleteSource) { log(it) }
+                                } else {
+                                    val outF = out ?: File(path.nameWithoutExtension + ".brarchive")
+                                    encodeSingle(path, outF, dedup, deleteSource) { log(it) }
+                                }
+                                log(">> 打包完成，耗时: ${System.currentTimeMillis() - start}ms")
+                            } catch (e: Exception) { log("错误: ${e.message}") }
+                        }
                     }
                 }
-            }) { Text("打包 (Encode)") }
+            ) { Text("打包 (Encode)") }
 
-            Button(onClick = {
-                if (inputPath.isBlank()) { log("错误: 输入路径为空"); return@Button }
-                coroutineScope.launch {
-                    log("开始解包...")
-                    withContext(Dispatchers.IO) {
-                        try {
-                            val start = System.currentTimeMillis()
-                            val path = File(inputPath)
-                            val out = if (outputPath.isNotBlank()) File(outputPath) else null
-                            if (recursive) {
-                                val root = File(path, "__brarchive")
-                                if (!root.exists()) throw Exception("未找到 __brarchive 目录")
-                                decodeRecursive(root, root, out ?: path, deleteSource) { log(it) }
-                            } else {
-                                val outF = out ?: File(path.nameWithoutExtension)
-                                decodeSingle(path, outF, deleteSource) { log(it) }
-                            }
-                            log(">> 解包完成，耗时: ${System.currentTimeMillis() - start}ms")
-                        } catch (e: Exception) { log("错误: ${e.message}") }
+            Button(
+                enabled = hasPermission,
+                onClick = {
+                    if (inputPath.isBlank()) { log("错误: 输入路径为空"); return@Button }
+                    coroutineScope.launch {
+                        log("开始解包...")
+                        withContext(Dispatchers.IO) {
+                            try {
+                                val start = System.currentTimeMillis()
+                                val path = File(inputPath)
+                                val out = if (outputPath.isNotBlank()) File(outputPath) else null
+                                if (recursive) {
+                                    val root = File(path, "__brarchive")
+                                    if (!root.exists()) throw Exception("未找到 __brarchive 目录")
+                                    decodeRecursive(root, root, out ?: path, deleteSource) { log(it) }
+                                } else {
+                                    val outF = out ?: File(path.nameWithoutExtension)
+                                    decodeSingle(path, outF, deleteSource) { log(it) }
+                                }
+                                log(">> 解包完成，耗时: ${System.currentTimeMillis() - start}ms")
+                            } catch (e: Exception) { log("错误: ${e.message}") }
+                        }
                     }
                 }
-            }) { Text("解包 (Decode)") }
+            ) { Text("解包 (Decode)") }
         }
 
         Spacer(Modifier.height(16.dp))
