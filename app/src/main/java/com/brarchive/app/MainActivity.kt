@@ -220,34 +220,38 @@ fun AppScreen(activity: MainActivity) {
 
 fun encodeSingle(path: File, out: File, dedup: Boolean, deleteSource: Boolean, log: (String) -> Unit) {
     if (!path.exists()) error("输入路径不存在")
-    val entries = mutableMapOf<String, ByteArray>()
+    val entries = mutableMapOf<String, File>()
     if (path.isDirectory) {
-        // 直接读取字节(Bytes)而不是文本(Text)
-        path.listFiles()?.forEach { if (it.isFile) entries[it.name] = it.readBytes() }
+        path.listFiles()?.forEach { if (it.isFile) entries[it.name] = it }
     } else {
-        entries[path.name] = path.readBytes()
+        entries[path.name] = path
     }
-    out.writeBytes(BrArchive.serialize(entries, dedup))
+    
+    // 直接把 File 丢给底层去流式处理，业务层不再保存任何 ByteArray
+    BrArchive.encode(entries, out, dedup)
+    
     log(">> 生成: ${out.name}")
     if (deleteSource) if (path.isDirectory) path.deleteRecursively() else path.delete()
 }
 
 fun encodeRecursive(sourceRoot: File, current: File, archiveRoot: File, dedup: Boolean, deleteSource: Boolean, log: (String) -> Unit) {
     val subDirs = mutableListOf<File>()
-    val files = mutableMapOf<String, ByteArray>()
+    val files = mutableMapOf<String, File>()
+    
     current.listFiles()?.forEach { f ->
         if (f.isDirectory) { 
             if (f.name != "__brarchive") subDirs.add(f) 
         } else if (f.isFile) {
-            // 直接读取字节，不挑格式（图片、文本通吃）
-            files[f.name] = f.readBytes()
+            files[f.name] = f
         }
     }
+    
     if (files.isNotEmpty()) {
         val rel = current.relativeTo(sourceRoot).path
         val outPath = if (rel.isEmpty()) File(archiveRoot, "${sourceRoot.name}.brarchive") else File(archiveRoot, "$rel.brarchive")
-        outPath.parentFile?.mkdirs()
-        outPath.writeBytes(BrArchive.serialize(files, dedup))
+        
+        BrArchive.encode(files, outPath, dedup)
+        
         log(">> 打包: ${outPath.name}")
         if (deleteSource) files.keys.forEach { File(current, it).delete() }
     }
@@ -256,15 +260,11 @@ fun encodeRecursive(sourceRoot: File, current: File, archiveRoot: File, dedup: B
 
 fun decodeSingle(path: File, out: File, deleteSource: Boolean, log: (String) -> Unit) {
     if (!path.exists()) error("文件不存在")
-    val archive = BrArchive.deserialize(path.readBytes())
-    if (!out.exists()) out.mkdirs()
-    for ((name, content) in archive) {
-        val dest = File(out, name)
-        dest.parentFile?.mkdirs()
-        // 直接原封不动写入字节，防止损坏图片
-        dest.writeBytes(content)
-    }
-    log("<< 解包: ${path.name} -> ${archive.size} 个文件")
+    
+    // 流式解压，不再返回大 Map，全部在内部完成释放
+    BrArchive.decode(path, out)
+    
+    log("<< 解包完成: ${path.name}")
     if (deleteSource) path.delete()
 }
 
