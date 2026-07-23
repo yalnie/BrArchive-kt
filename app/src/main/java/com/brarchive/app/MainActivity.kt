@@ -10,82 +10,175 @@ import android.os.Bundle
 import android.os.Environment
 import android.provider.Settings
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import kotlin.coroutines.coroutineContext
+import com.brarchive.app.ui.theme.AppTheme
+
+enum class ThemeMode { LIGHT, SYSTEM, DARK }
+
+class ThemePreferences(context: Context) {
+    private val prefs = context.getSharedPreferences("app_theme_prefs", Context.MODE_PRIVATE)
+
+    var themeMode: ThemeMode
+        get() {
+            val name = prefs.getString("theme_mode", ThemeMode.SYSTEM.name) ?: ThemeMode.SYSTEM.name
+            return try { ThemeMode.valueOf(name) } catch (e: Exception) { ThemeMode.SYSTEM }
+        }
+        set(value) = prefs.edit().putString("theme_mode", value.name).apply()
+
+    var isDynamicColor: Boolean
+        get() = prefs.getBoolean("dynamic_color", true)
+        set(value) = prefs.edit().putBoolean("dynamic_color", value).apply()
+}
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent {
-            MaterialTheme {
-                Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    AppScreen(this)
-                }
-            }
-        }
-    }
 
-    fun requestStoragePermissionAndroid11Plus() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            try {
-                val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
-                intent.data = Uri.parse("package:$packageName")
-                startActivity(intent)
-            } catch (e: Exception) {
-                val intent = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
-                startActivity(intent)
+        val themePrefs = ThemePreferences(this)
+
+        setContent {
+            var dynamicColorEnabled by remember { mutableStateOf(themePrefs.isDynamicColor) }
+            var themeMode by remember { mutableStateOf(themePrefs.themeMode) }
+
+            val darkTheme = when (themeMode) {
+                ThemeMode.LIGHT -> false
+                ThemeMode.DARK -> true
+                ThemeMode.SYSTEM -> isSystemInDarkTheme()
+            }
+
+            DisposableEffect(darkTheme) {
+                enableEdgeToEdge(
+                    statusBarStyle = SystemBarStyle.auto(
+                        android.graphics.Color.TRANSPARENT,
+                        android.graphics.Color.TRANSPARENT
+                    ) { darkTheme },
+                    navigationBarStyle = SystemBarStyle.auto(
+                        android.graphics.Color.TRANSPARENT,
+                        android.graphics.Color.TRANSPARENT
+                    ) { darkTheme }
+                )
+                onDispose { }
+            }
+
+            AppTheme(
+                darkTheme = darkTheme,
+                dynamicColor = dynamicColorEnabled
+            ) {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background
+                ) {
+                    AppScreen(
+                        activity = this,
+                        dynamicColorEnabled = dynamicColorEnabled,
+                        onDynamicColorChange = { newValue ->
+                            dynamicColorEnabled = newValue
+                            themePrefs.isDynamicColor = newValue
+                        },
+                        themeMode = themeMode,
+                        onThemeModeChange = { newMode ->
+                            themeMode = newMode
+                            themePrefs.themeMode = newMode
+                        }
+                    )
+                }
             }
         }
     }
 }
 
-// 检查是否拥有存储权限（兼容各个安卓版本）
 fun checkStoragePermission(context: Context): Boolean {
     return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-        Environment.isExternalStorageManager() // Android 11+ 检查
+        Environment.isExternalStorageManager()
     } else {
-        // Android 10 及以下检查
         val read = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_EXTERNAL_STORAGE)
         val write = ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE)
         read == PackageManager.PERMISSION_GRANTED && write == PackageManager.PERMISSION_GRANTED
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AppScreen(activity: MainActivity) {
+fun AppScreen(
+    activity: MainActivity,
+    dynamicColorEnabled: Boolean,
+    onDynamicColorChange: (Boolean) -> Unit,
+    themeMode: ThemeMode,
+    onThemeModeChange: (ThemeMode) -> Unit
+) {
+    val context = LocalContext.current
+    val focusManager = LocalFocusManager.current
     val coroutineScope = rememberCoroutineScope()
+    val scrollState = rememberScrollState()
+
+    var showMenu by remember { mutableStateOf(false) }
+    var showLicenseDialog by remember { mutableStateOf(false) }
+    var licenseText by remember { mutableStateOf("") }
+
     var inputPath by remember { mutableStateOf("/storage/emulated/0/Download/") }
     var outputPath by remember { mutableStateOf("") }
     var recursive by remember { mutableStateOf(false) }
     var dedup by remember { mutableStateOf(true) }
     var deleteSource by remember { mutableStateOf(false) }
-    val logs = remember { mutableStateListOf("欢迎使用 brarchive-kt 安卓版！") }
 
+    var isProcessing by remember { mutableStateOf(false) }
+    var activeJob by remember { mutableStateOf<Job?>(null) }
+
+    val initialWelcome = stringResource(R.string.welcome_log)
+    val logs = remember { mutableStateListOf(initialWelcome) }
     fun log(msg: String) { logs.add(msg) }
 
-    // 动态权限状态与生命周期监听（用户去设置页返回后自动刷新 UI）
     var hasPermission by remember { mutableStateOf(checkStoragePermission(activity)) }
     val lifecycleOwner = LocalLifecycleOwner.current
+
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
+            if (event == Lifecycle.Event.ON_RESUME || event == Lifecycle.Event.ON_START) {
                 hasPermission = checkStoragePermission(activity)
             }
         }
@@ -93,188 +186,505 @@ fun AppScreen(activity: MainActivity) {
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    // 安卓 10 及以下的传统弹窗权限请求
+    val manageStorageLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) {
+        hasPermission = checkStoragePermission(activity)
+    }
+
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
     ) {
         hasPermission = checkStoragePermission(activity)
     }
 
-    Column(modifier = Modifier.padding(16.dp).fillMaxSize()) {
-        if (!hasPermission) {
-            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text("需要「存储访问权限」才能在手机中打包/解包文件。")
-                    Spacer(Modifier.height(8.dp))
-                    Button(onClick = {
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                            activity.requestStoragePermissionAndroid11Plus()
-                        } else {
-                            permissionLauncher.launch(
-                                arrayOf(
-                                    Manifest.permission.READ_EXTERNAL_STORAGE,
-                                    Manifest.permission.WRITE_EXTERNAL_STORAGE
-                                )
-                            )
-                        }
-                    }) {
-                        Text("点击授予权限")
-                    }
+    if (showLicenseDialog) {
+        val licenseVertScroll = rememberScrollState()
+        val licenseHorizScroll = rememberScrollState()
+        AlertDialog(
+            onDismissRequest = { showLicenseDialog = false },
+            confirmButton = {
+                TextButton(onClick = { showLicenseDialog = false }) {
+                    Text(stringResource(android.R.string.ok))
+                }
+            },
+            title = { Text(stringResource(R.string.license_title)) },
+            text = {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 450.dp)
+                        .horizontalScroll(licenseHorizScroll)
+                        .verticalScroll(licenseVertScroll)
+                ) {
+                    Text(
+                        text = licenseText,
+                        fontFamily = FontFamily.Monospace,
+                        style = MaterialTheme.typography.bodySmall,
+                        softWrap = false
+                    )
                 }
             }
-            Spacer(Modifier.height(16.dp))
-        }
-
-        OutlinedTextField(
-            value = inputPath,
-            onValueChange = { inputPath = it },
-            label = { Text("输入路径 (文件或目录)") },
-            modifier = Modifier.fillMaxWidth()
         )
-        OutlinedTextField(
-            value = outputPath,
-            onValueChange = { outputPath = it },
-            label = { Text("输出路径 (可选)") },
-            modifier = Modifier.fillMaxWidth()
-        )
+    }
 
-        Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-            Checkbox(checked = recursive, onCheckedChange = { recursive = it })
-            Text("递归目录")
-        }
-        Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-            Checkbox(checked = dedup, onCheckedChange = { dedup = it })
-            Text("内容去重 (仅打包)")
-        }
-        Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-            Checkbox(checked = deleteSource, onCheckedChange = { deleteSource = it })
-            Text("完成后删除源文件")
-        }
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text(stringResource(R.string.app_name)) },
+                actions = {
+                    Box {
+                        IconButton(onClick = { showMenu = !showMenu }) {
+                            Icon(
+                                painter = painterResource(R.drawable.more_vert_24px),
+                                contentDescription = stringResource(R.string.menu)
+                            )
+                        }
 
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-            Button(
-                enabled = hasPermission,
-                onClick = {
-                    if (inputPath.isBlank()) { log("错误: 输入路径为空"); return@Button }
-                    coroutineScope.launch {
-                        log("开始打包...")
-                        withContext(Dispatchers.IO) {
-                            try {
-                                val start = System.currentTimeMillis()
-                                val path = File(inputPath)
-                                val out = if (outputPath.isNotBlank()) File(outputPath) else null
-                                if (recursive) {
-                                    val root = File(out ?: path, "__brarchive")
-                                    encodeRecursive(path, path, root, dedup, deleteSource) { log(it) }
-                                } else {
-                                    val outF = out ?: File(path.nameWithoutExtension + ".brarchive")
-                                    encodeSingle(path, outF, dedup, deleteSource) { log(it) }
+                        DropdownMenu(
+                            expanded = showMenu,
+                            onDismissRequest = { showMenu = false },
+                            modifier = Modifier.width(230.dp)
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = stringResource(R.string.theme_title),
+                                        style = MaterialTheme.typography.bodyMedium
+                                    )
+
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = MaterialTheme.colorScheme.surfaceVariant,
+                                        modifier = Modifier.height(38.dp)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(2.dp),
+                                            horizontalArrangement = Arrangement.spacedBy(2.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            val modes = listOf(
+                                                ThemeMode.LIGHT to R.drawable.light_mode_24px,
+                                                ThemeMode.SYSTEM to R.drawable.brightness_auto_24px,
+                                                ThemeMode.DARK to R.drawable.dark_mode_24px
+                                            )
+
+                                            modes.forEach { (mode, iconRes) ->
+                                                val isSelected = themeMode == mode
+                                                Surface(
+                                                    shape = CircleShape,
+                                                    color = if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent,
+                                                    modifier = Modifier
+                                                        .size(34.dp)
+                                                        .clickable { onThemeModeChange(mode) }
+                                                ) {
+                                                    Box(contentAlignment = Alignment.Center) {
+                                                        Icon(
+                                                            painter = painterResource(id = iconRes),
+                                                            contentDescription = null,
+                                                            modifier = Modifier.size(18.dp),
+                                                            tint = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
-                                log(">> 打包完成，耗时: ${System.currentTimeMillis() - start}ms")
-                            } catch (e: Exception) { log("错误: ${e.message}") }
+
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .toggleable(
+                                                value = dynamicColorEnabled,
+                                                role = Role.Switch,
+                                                onValueChange = { onDynamicColorChange(it) }
+                                            ),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = stringResource(R.string.dynamic_color),
+                                            style = MaterialTheme.typography.bodyMedium
+                                        )
+                                        Switch(
+                                            checked = dynamicColorEnabled,
+                                            onCheckedChange = null,
+                                            modifier = Modifier.graphicsLayer(scaleX = 0.85f, scaleY = 0.85f)
+                                        )
+                                    }
+                                }
+
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            showMenu = false
+                                            val intent = Intent(
+                                                Intent.ACTION_VIEW,
+                                                Uri.parse("https://github.com/yinghuajimew/BrArchive-kt")
+                                            )
+                                            context.startActivity(intent)
+                                        }
+                                        .padding(vertical = 4.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = stringResource(R.string.github_title),
+                                        style = MaterialTheme.typography.bodyMedium
+                                    )
+                                    Icon(
+                                        painter = painterResource(R.drawable.github_24px),
+                                        contentDescription = "GitHub",
+                                        modifier = Modifier.size(32.dp),
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            showMenu = false
+                                            try {
+                                                licenseText = context.assets.open("LICENSE")
+                                                    .bufferedReader().use { it.readText() }
+                                                showLicenseDialog = true
+                                            } catch (e: Exception) {
+                                                log("LICENSE file not found in assets.")
+                                            }
+                                        }
+                                        .padding(vertical = 4.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = stringResource(R.string.license_title),
+                                        style = MaterialTheme.typography.bodyMedium
+                                    )
+                                    Icon(
+                                        painter = painterResource(R.drawable.license_24px),
+                                        contentDescription = stringResource(R.string.license_title),
+                                        modifier = Modifier.size(32.dp),
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
                         }
                     }
                 }
-            ) { Text("打包 (Encode)") }
+            )
+        }
+    ) { innerPadding ->
+        BoxWithConstraints(
+            modifier = Modifier
+                .padding(innerPadding)
+                .fillMaxSize()
+        ) {
+            val isCompactHeight = maxHeight < 550.dp
 
-            Button(
-                enabled = hasPermission,
-                onClick = {
-                    if (inputPath.isBlank()) { log("错误: 输入路径为空"); return@Button }
-                    coroutineScope.launch {
-                        log("开始解包...")
-                        withContext(Dispatchers.IO) {
-                            try {
-                                val start = System.currentTimeMillis()
-                                val path = File(inputPath)
-                                val out = if (outputPath.isNotBlank()) File(outputPath) else null
-                                if (recursive) {
-                                    val root = File(path, "__brarchive")
-                                    if (!root.exists()) throw Exception("未找到 __brarchive 目录")
-                                    decodeRecursive(root, root, out ?: path, deleteSource) { log(it) }
-                                } else {
-                                    val outF = out ?: File(path.nameWithoutExtension)
-                                    decodeSingle(path, outF, deleteSource) { log(it) }
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .then(if (isCompactHeight) Modifier.verticalScroll(scrollState) else Modifier)
+                    .pointerInput(Unit) {
+                        detectTapGestures(onTap = {
+                            focusManager.clearFocus()
+                        })
+                    }
+                    .padding(16.dp)
+            ) {
+                if (!hasPermission) {
+                    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Text(
+                                text = stringResource(R.string.permission_required),
+                                color = MaterialTheme.colorScheme.onErrorContainer
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            Button(
+                                enabled = !isProcessing,
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = MaterialTheme.colorScheme.error,
+                                    contentColor = MaterialTheme.colorScheme.onError
+                                ),
+                                onClick = {
+                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                                        try {
+                                            val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                                                data = Uri.parse("package:${activity.packageName}")
+                                            }
+                                            manageStorageLauncher.launch(intent)
+                                        } catch (e: Exception) {
+                                            val intent = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
+                                            manageStorageLauncher.launch(intent)
+                                        }
+                                    } else {
+                                        permissionLauncher.launch(
+                                            arrayOf(
+                                                Manifest.permission.READ_EXTERNAL_STORAGE,
+                                                Manifest.permission.WRITE_EXTERNAL_STORAGE
+                                            )
+                                        )
+                                    }
                                 }
-                                log(">> 解包完成，耗时: ${System.currentTimeMillis() - start}ms")
-                            } catch (e: Exception) { log("错误: ${e.message}") }
+                            ) {
+                                Text(stringResource(R.string.grant_permission))
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(16.dp))
+                }
+
+                OutlinedTextField(
+                    value = inputPath,
+                    onValueChange = { inputPath = it },
+                    label = { Text(stringResource(R.string.input_path_label)) },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    enabled = !isProcessing,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = { focusManager.clearFocus() })
+                )
+
+                OutlinedTextField(
+                    value = outputPath,
+                    onValueChange = { outputPath = it },
+                    label = { Text(stringResource(R.string.output_path_label)) },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    enabled = !isProcessing,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = { focusManager.clearFocus() })
+                )
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(
+                        checked = recursive,
+                        onCheckedChange = { recursive = it },
+                        enabled = !isProcessing
+                    )
+                    Text(stringResource(R.string.recursive))
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(
+                        checked = dedup,
+                        onCheckedChange = { dedup = it },
+                        enabled = !isProcessing
+                    )
+                    Text(stringResource(R.string.dedup))
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(
+                        checked = deleteSource,
+                        onCheckedChange = { deleteSource = it },
+                        enabled = !isProcessing
+                    )
+                    Text(stringResource(R.string.delete_source))
+                }
+
+                Spacer(Modifier.height(8.dp))
+
+                if (isProcessing) {
+                    Button(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                        onClick = {
+                            activeJob?.cancel()
+                        }
+                    ) {
+                        Text(
+                            text = stringResource(R.string.cancel_button),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                } else {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            modifier = Modifier.weight(1f),
+                            enabled = hasPermission,
+                            onClick = {
+                                focusManager.clearFocus()
+                                if (inputPath.isBlank()) {
+                                    log(context.getString(R.string.err_empty_input))
+                                    return@Button
+                                }
+                                activeJob = coroutineScope.launch {
+                                    isProcessing = true
+                                    log(context.getString(R.string.start_encoding))
+                                    try {
+                                        withContext(Dispatchers.IO) {
+                                            val start = System.currentTimeMillis()
+                                            val path = File(inputPath)
+                                            val out = if (outputPath.isNotBlank()) File(outputPath) else null
+                                            if (recursive) {
+                                                val root = File(out ?: path, "__brarchive")
+                                                encodeRecursive(context, path, path, root, dedup, deleteSource) { log(it) }
+                                            } else {
+                                                val outF = out ?: File(path.nameWithoutExtension + ".brarchive")
+                                                encodeSingle(context, path, outF, dedup, deleteSource) { log(it) }
+                                            }
+                                            val elapsed = System.currentTimeMillis() - start
+                                            log(context.getString(R.string.encode_complete, elapsed))
+                                        }
+                                    } catch (e: CancellationException) {
+                                        log(context.getString(R.string.operation_cancelled))
+                                    } catch (e: Exception) {
+                                        log("${e.message}")
+                                    } finally {
+                                        isProcessing = false
+                                        activeJob = null
+                                    }
+                                }
+                            }
+                        ) {
+                            Text(
+                                text = stringResource(R.string.encode_button),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+
+                        Button(
+                            modifier = Modifier.weight(1f),
+                            enabled = hasPermission,
+                            onClick = {
+                                focusManager.clearFocus()
+                                if (inputPath.isBlank()) {
+                                    log(context.getString(R.string.err_empty_input))
+                                    return@Button
+                                }
+                                activeJob = coroutineScope.launch {
+                                    isProcessing = true
+                                    log(context.getString(R.string.start_decoding))
+                                    try {
+                                        withContext(Dispatchers.IO) {
+                                            val start = System.currentTimeMillis()
+                                            val path = File(inputPath)
+                                            val out = if (outputPath.isNotBlank()) File(outputPath) else null
+                                            if (recursive) {
+                                                val root = File(path, "__brarchive")
+                                                if (!root.exists()) throw Exception(context.getString(R.string.err_not_found_brarchive))
+                                                decodeRecursive(context, root, root, out ?: path, deleteSource) { log(it) }
+                                            } else {
+                                                val outF = out ?: File(path.nameWithoutExtension)
+                                                decodeSingle(context, path, outF, deleteSource) { log(it) }
+                                            }
+                                            val elapsed = System.currentTimeMillis() - start
+                                            log(context.getString(R.string.decode_complete, elapsed))
+                                        }
+                                    } catch (e: CancellationException) {
+                                        log(context.getString(R.string.operation_cancelled))
+                                    } catch (e: Exception) {
+                                        log("${e.message}")
+                                    } finally {
+                                        isProcessing = false
+                                        activeJob = null
+                                    }
+                                }
+                            }
+                        ) {
+                            Text(
+                                text = stringResource(R.string.decode_button),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
                         }
                     }
                 }
-            ) { Text("解包 (Decode)") }
-        }
 
-        Spacer(Modifier.height(16.dp))
-        Text("运行日志:")
-        Card(modifier = Modifier.fillMaxSize(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
-            LazyColumn(modifier = Modifier.padding(8.dp).fillMaxSize()) {
-                items(logs) { msg ->
-                    Text(text = msg, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+                Spacer(Modifier.height(16.dp))
+                Text(stringResource(R.string.run_log_header))
+                Spacer(Modifier.height(4.dp))
+                Card(
+                    modifier = if (isCompactHeight) {
+                        Modifier.fillMaxWidth().height(200.dp)
+                    } else {
+                        Modifier.fillMaxWidth().weight(1f)
+                    },
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                ) {
+                    LazyColumn(modifier = Modifier.padding(8.dp).fillMaxSize()) {
+                        items(logs) { msg ->
+                            Text(text = msg, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
                 }
             }
         }
     }
 }
 
-// ----------------- Android 版业务逻辑 -----------------
-
-fun encodeSingle(path: File, out: File, dedup: Boolean, deleteSource: Boolean, log: (String) -> Unit) {
-    if (!path.exists()) error("输入路径不存在")
+suspend fun encodeSingle(context: Context, path: File, out: File, dedup: Boolean, deleteSource: Boolean, log: (String) -> Unit) {
+    coroutineContext.ensureActive()
+    if (!path.exists()) error(context.getString(R.string.err_input_not_exists))
     val entries = mutableMapOf<String, File>()
     if (path.isDirectory) {
-        path.listFiles()?.forEach { if (it.isFile) entries[it.name] = it }
+        path.listFiles()?.forEach {
+            coroutineContext.ensureActive()
+            if (it.isFile) entries[it.name] = it
+        }
     } else {
         entries[path.name] = path
     }
-    
-    // 直接把 File 丢给底层去流式处理，业务层不再保存任何 ByteArray
     BrArchive.encode(entries, out, dedup)
-    
-    log(">> 生成: ${out.name}")
+    log(">> ${out.name}")
     if (deleteSource) if (path.isDirectory) path.deleteRecursively() else path.delete()
 }
 
-fun encodeRecursive(sourceRoot: File, current: File, archiveRoot: File, dedup: Boolean, deleteSource: Boolean, log: (String) -> Unit) {
+suspend fun encodeRecursive(context: Context, sourceRoot: File, current: File, archiveRoot: File, dedup: Boolean, deleteSource: Boolean, log: (String) -> Unit) {
+    coroutineContext.ensureActive()
     val subDirs = mutableListOf<File>()
     val files = mutableMapOf<String, File>()
-    
     current.listFiles()?.forEach { f ->
-        if (f.isDirectory) { 
-            if (f.name != "__brarchive") subDirs.add(f) 
+        coroutineContext.ensureActive()
+        if (f.isDirectory) {
+            if (f.name != "__brarchive") subDirs.add(f)
         } else if (f.isFile) {
             files[f.name] = f
         }
     }
-    
     if (files.isNotEmpty()) {
         val rel = current.relativeTo(sourceRoot).path
         val outPath = if (rel.isEmpty()) File(archiveRoot, "${sourceRoot.name}.brarchive") else File(archiveRoot, "$rel.brarchive")
-        
+        outPath.parentFile?.mkdirs()
         BrArchive.encode(files, outPath, dedup)
-        
-        log(">> 打包: ${outPath.name}")
-        if (deleteSource) files.keys.forEach { File(current, it).delete() }
+        log(">> ${outPath.name}")
+        if (deleteSource) files.values.forEach { it.delete() }
     }
-    subDirs.forEach { encodeRecursive(sourceRoot, it, archiveRoot, dedup, deleteSource, log) }
+    subDirs.forEach { encodeRecursive(context, sourceRoot, it, archiveRoot, dedup, deleteSource, log) }
 }
 
-fun decodeSingle(path: File, out: File, deleteSource: Boolean, log: (String) -> Unit) {
-    if (!path.exists()) error("文件不存在")
-    
-    // 流式解压，不再返回大 Map，全部在内部完成释放
+suspend fun decodeSingle(context: Context, path: File, out: File, deleteSource: Boolean, log: (String) -> Unit) {
+    coroutineContext.ensureActive()
+    if (!path.exists()) error(context.getString(R.string.err_file_not_found))
     BrArchive.decode(path, out)
-    
-    log("<< 解包完成: ${path.name}")
+    log("<< ${path.name}")
     if (deleteSource) path.delete()
 }
 
-fun decodeRecursive(root: File, current: File, outRoot: File, deleteSource: Boolean, log: (String) -> Unit) {
+suspend fun decodeRecursive(context: Context, root: File, current: File, outRoot: File, deleteSource: Boolean, log: (String) -> Unit) {
+    coroutineContext.ensureActive()
     current.listFiles()?.forEach { f ->
-        if (f.isDirectory) decodeRecursive(root, f, outRoot, deleteSource, log)
+        coroutineContext.ensureActive()
+        if (f.isDirectory) decodeRecursive(context, root, f, outRoot, deleteSource, log)
         else if (f.isFile && f.extension == "brarchive") {
             val rel = f.relativeTo(root).path.removeSuffix(".brarchive")
             val outDir = File(outRoot, rel)
-            decodeSingle(f, outDir, deleteSource, log)
+            decodeSingle(context, f, outDir, deleteSource, log)
         }
     }
 }

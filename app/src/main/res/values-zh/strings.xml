@@ -1,0 +1,32 @@
+<resources>
+    <string name="app_name">brarchive工具</string>
+    <string name="theme_title">主题</string>
+    <string name="theme_light">浅色</string>
+    <string name="theme_system">跟随系统</string>
+    <string name="theme_dark">深色</string>
+    <string name="permission_required">需要「存储访问权限」才能在手机中打包/解包文件。</string>
+    <string name="grant_permission">点击授予权限</string>
+    <string name="input_path_label">输入路径 (文件或目录)</string>
+    <string name="output_path_label">输出路径 (可选)</string>
+    <string name="recursive">递归目录</string>
+    <string name="dedup">内容去重 (仅打包)</string>
+    <string name="delete_source">完成后删除源文件</string>
+    <string name="dynamic_color">动态色彩</string>
+    <string name="encode_button">打包 (Encode)</string>
+    <string name="decode_button">解包 (Decode)</string>
+    <string name="cancel_button">取消操作</string>
+    <string name="run_log_header">运行日志:</string>
+    <string name="welcome_log">欢迎使用 brarchive-kt 安卓版！</string>
+    <string name="err_empty_input">错误: 输入路径为空</string>
+    <string name="start_encoding">开始打包...</string>
+    <string name="start_decoding">开始解包...</string>
+    <string name="encode_complete">>> 打包完成，耗时: %1$dms</string>
+    <string name="decode_complete">>> 解包完成，耗时: %1$dms</string>
+    <string name="err_not_found_brarchive">未找到 __brarchive 目录</string>
+    <string name="err_input_not_exists">输入路径不存在</string>
+    <string name="err_file_not_found">文件不存在</string>
+    <string name="menu">菜单</string>
+    <string name="operation_cancelled">用户已取消操作。</string>
+    <string name="github_title" translatable="false">GitHub</string>
+    <string name="license_title">许可证</string>
+</resources>
