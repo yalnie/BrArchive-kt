@@ -45,6 +45,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -513,6 +514,7 @@ fun AppScreen(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
+                        // 【修改点】：处理输入为空及输出目录智能追加文件名的逻辑
                         Button(
                             modifier = Modifier.weight(1f),
                             enabled = hasPermission,
@@ -531,10 +533,17 @@ fun AppScreen(
                                             val path = File(inputPath)
                                             val out = if (outputPath.isNotBlank()) File(outputPath) else null
                                             if (recursive) {
-                                                val root = File(out ?: path, "__brarchive")
+                                                val root = out ?: File(path, "__brarchive")
                                                 encodeRecursive(context, path, path, root, dedup, deleteSource) { log(it) }
                                             } else {
-                                                val outF = out ?: File(path.nameWithoutExtension + ".brarchive")
+                                                // 修复：如果输出路径填的是文件夹，智能为其追加 .brarchive 文件名避免 EISDIR 错误
+                                                val defaultName = "${path.nameWithoutExtension}.brarchive"
+                                                val outF = if (out != null) {
+                                                    if (out.isDirectory || outputPath.endsWith("/") || outputPath.endsWith("\\")) {
+                                                        File(out, defaultName)
+                                                    } else out
+                                                } else File(path.parentFile, defaultName)
+
                                                 encodeSingle(context, path, outF, dedup, deleteSource) { log(it) }
                                             }
                                             val elapsed = System.currentTimeMillis() - start
@@ -578,9 +587,17 @@ fun AppScreen(
                                             if (recursive) {
                                                 val root = File(path, "__brarchive")
                                                 if (!root.exists()) throw Exception(context.getString(R.string.err_not_found_brarchive))
-                                                decodeRecursive(context, root, root, out ?: path, deleteSource) { log(it) }
+                                                val outF = out ?: path
+                                                decodeRecursive(context, root, root, outF, deleteSource) { log(it) }
                                             } else {
-                                                val outF = out ?: File(path.nameWithoutExtension)
+                                                // 修复：如果输出路径填的是文件夹，智能解包到该目录下
+                                                val defaultName = path.nameWithoutExtension
+                                                val outF = if (out != null) {
+                                                    if (out.isDirectory || outputPath.endsWith("/") || outputPath.endsWith("\\")) {
+                                                        File(out, defaultName)
+                                                    } else out
+                                                } else File(path.parentFile, defaultName)
+
                                                 decodeSingle(context, path, outF, deleteSource) { log(it) }
                                             }
                                             val elapsed = System.currentTimeMillis() - start
@@ -609,18 +626,46 @@ fun AppScreen(
                 Spacer(Modifier.height(16.dp))
                 Text(stringResource(R.string.run_log_header))
                 Spacer(Modifier.height(4.dp))
-                Card(
+                
+                // 【修改点】：增加复制日志按钮的 Box 层
+                Box(
                     modifier = if (isCompactHeight) {
                         Modifier.fillMaxWidth().height(200.dp)
                     } else {
                         Modifier.fillMaxWidth().weight(1f)
-                    },
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                    }
                 ) {
-                    LazyColumn(modifier = Modifier.padding(8.dp).fillMaxSize()) {
-                        items(logs) { msg ->
-                            Text(text = msg, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+                    Card(
+                        modifier = Modifier.fillMaxSize(),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                    ) {
+                        LazyColumn(modifier = Modifier.padding(8.dp).fillMaxSize()) {
+                            items(logs) { msg ->
+                                Text(text = msg, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+                            }
                         }
+                    }
+
+                    // 复制日志按钮浮层
+                    Surface(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(8.dp)
+                            .clickable {
+                                val clip = android.content.ClipData.newPlainText("brarchive_logs", logs.joinToString("\n"))
+                                val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                                cm.setPrimaryClip(clip)
+                                android.widget.Toast.makeText(context, "已复制", android.widget.Toast.LENGTH_SHORT).show()
+                            },
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.85f)
+                    ) {
+                        Text(
+                            text = "复制",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onPrimary,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                        )
                     }
                 }
             }
@@ -628,19 +673,32 @@ fun AppScreen(
     }
 }
 
+// 【修改点】：修复 encodeSingle 丢弃子目录的问题
 suspend fun encodeSingle(context: Context, path: File, out: File, dedup: Boolean, deleteSource: Boolean, log: (String) -> Unit) {
     coroutineContext.ensureActive()
     if (!path.exists()) error(context.getString(R.string.err_input_not_exists))
+    
     val entries = mutableMapOf<String, File>()
     if (path.isDirectory) {
-        path.listFiles()?.forEach {
+        // walkTopDown() 会深度遍历所有层级的子目录
+        path.walkTopDown().forEach { file ->
             coroutineContext.ensureActive()
-            if (it.isFile) entries[it.name] = it
+            if (file.isFile) {
+                // 使用相对于根目录的相对路径作为内部存储名，并把反斜杠规范化为正斜杠
+                // 例如: "textures/blocks/dirt.png"
+                val relativeName = file.relativeTo(path).path.replace("\\", "/")
+                entries[relativeName] = file
+            }
         }
     } else {
         entries[path.name] = path
     }
+    
+    if (entries.isEmpty()) error("目录为空，未找到任何可打包的文件")
+    
+    out.parentFile?.mkdirs()
     BrArchive.encode(entries, out, dedup)
+    
     log(">> ${out.name}")
     if (deleteSource) if (path.isDirectory) path.deleteRecursively() else path.delete()
 }
